@@ -17,7 +17,7 @@
         .hidden { display: none !important; }
         #crosshair { position: absolute; top: 50%; left: 50%; color: rgba(255,255,255,0.5); transform: translate(-50%, -50%); z-index: 20; pointer-events: none; font-size: 20px; }
         #chat-container { position: absolute; bottom: 20px; left: 20px; width: 300px; z-index: 40; background: rgba(0,0,0,0.5); border-radius: 5px; display: flex; flex-direction: column; }
-        #chat-messages { height: 100px; overflow-y: auto; color: white; font-size: 12px; padding: 8px; border-bottom: 1px solid #333; }
+        #chat-messages { height: 120px; overflow-y: auto; color: white; font-size: 13px; padding: 10px; display: flex; flex-direction: column; border-bottom: 1px solid #333; }
         #chat-input { background: rgba(0,0,0,0.8); border: 1px solid #555; width: calc(100% - 10px); margin: 5px; padding: 5px; color: white; outline: none; }
     </style>
 </head>
@@ -34,19 +34,20 @@
             <button class="btn-join" onclick="connectToHost()">UNIRSE AL JUEGO</button>
         </div>
         <button id="start-btn" class="btn-start" onclick="startGame()">INICIAR PARTIDA</button>
+        <div id="status-msg" style="color: #f1c40f; margin-top: 10px; font-size: 11px;">Usa WASD/Flechas.</div>
     </div>
 </div>
 
 <div id="chat-container">
     <div id="chat-messages"></div>
-    <input type="text" id="chat-input" placeholder="Escribe...">
+    <input type="text" id="chat-input" placeholder="Escribe algo...">
 </div>
 
 <canvas id="gameCanvas"></canvas>
 
 <script>
     const canvas = document.getElementById('gameCanvas');
-    const ctx = canvas.getContext('2d', { alpha: false }); // Optimización de contexto
+    const ctx = canvas.getContext('2d', { alpha: false }); // Optimización
     const chatMessages = document.getElementById('chat-messages');
     const chatInput = document.getElementById('chat-input');
 
@@ -74,20 +75,20 @@
     const peer = new Peer();
     let myId, hostConn, connections = {}, players = {}, slenderman = { x: 8.5, y: 8.5, active: false };
     let gameStarted = false, notesCollected = 0, isDead = false, maxNotes = 0;
-    let slenderEffect = 0;
+    let slenderEffect = 0; // Control de gris
 
     function getPlayerName(id) { return id ? id.substring(0, 4) : "???"; }
 
     peer.on('open', id => {
         myId = id;
         document.getElementById('my-id').innerText = id;
-        players[id] = { id: id, x: 1.5, y: 1.5, isDead: false, targetX: 1.5, targetY: 1.5 };
+        players[id] = { id: id, x: 1.5, y: 1.5, isDead: false };
     });
 
     peer.on('connection', conn => {
         conn.on('open', () => {
             connections[conn.peer] = conn;
-            players[conn.peer] = { id: conn.peer, x: 1.5, y: 1.5, isDead: false, targetX: 1.5, targetY: 1.5 };
+            players[conn.peer] = { id: conn.peer, x: 1.5, y: 1.5, isDead: false };
             addChatMessage("Sistema", `${getPlayerName(conn.peer)} se unió.`);
             updateLobbyUI();
             syncToAll();
@@ -98,35 +99,39 @@
     function handleData(data) {
         if (data.type === 'move') {
             if(players[data.id]) {
-                // Interpolación básica para evitar lag visual
-                players[data.id].targetX = data.x;
-                players[data.id].targetY = data.y;
+                players[data.id].x = data.x;
+                players[data.id].y = data.y;
                 players[data.id].isDead = data.isDead;
-            }
-        } else if (data.type === 'collect') {
-            if (!hostConn) {
-                worldMap[data.cx][data.cy] = 0;
-                notesCollected++;
-                broadcast({ type: 'chat', sender: 'Sistema', text: `¡${getPlayerName(data.id)} colectó una página!` });
-                syncToAll();
             }
         } else if (data.type === 'chat') {
             addChatMessage(data.sender, data.text);
-            if (!hostConn) broadcast(data, data.sender);
+            if (!hostConn) broadcast(data, data.sender); 
+        } else if (data.type === 'collect') {
+            if (!hostConn && worldMap[data.cx][data.cy] === 2) {
+                worldMap[data.cx][data.cy] = 0;
+                notesCollected++;
+                // AVISO GLOBAL DE PÁGINA
+                const msg = { type: 'chat', sender: 'Sistema', text: `¡${getPlayerName(data.id)} colectó una página!` };
+                handleData(msg);
+                broadcast(msg);
+                syncToAll();
+            }
         } else if (data.type === 'update') {
             worldMap = data.worldMap;
             slenderman = data.slenderman;
             notesCollected = data.notesCollected;
             maxNotes = data.maxNotes;
-            if(data.gameStarted && !gameStarted) startGameLocal();
-            for(let id in data.players) {
-                if(id !== myId) {
-                    if(!players[id]) players[id] = data.players[id];
-                    players[id].targetX = data.players[id].x;
-                    players[id].targetY = data.players[id].y;
-                }
+            if(data.gameStarted && !gameStarted) {
+                gameStarted = true;
+                document.getElementById('ui').classList.add('hidden');
             }
+            let incoming = data.players;
+            for(let id in incoming) if(id !== myId) players[id] = incoming[id];
         }
+    }
+
+    function syncToAll() {
+        if(!hostConn) broadcast({ type: 'update', players, worldMap, slenderman, gameStarted, notesCollected, maxNotes });
     }
 
     function broadcast(data, exclude = null) {
@@ -134,105 +139,52 @@
         if (hostConn && hostConn.open) hostConn.send(data);
     }
 
-    function syncToAll() {
-        if(!hostConn) broadcast({ type: 'update', players, worldMap, slenderman, gameStarted, notesCollected, maxNotes });
-    }
-
     function connectToHost() {
         const hId = document.getElementById('peer-id-input').value;
         if(!hId) return;
-        hostConn = peer.connect(hId, { reliable: false }); // Modo rápido
+        hostConn = peer.connect(hId);
         hostConn.on('open', () => {
             document.getElementById('ui').classList.add('hidden');
             setInterval(() => {
                 if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
-            }, 50); // 20 updates por segundo es suficiente
+            }, 40);
         });
         hostConn.on('data', handleData);
     }
 
-    function startGameLocal() {
-        gameStarted = true;
-        document.getElementById('ui').classList.add('hidden');
-    }
-
     function startGame() {
+        gameStarted = true;
         maxNotes = worldMap.flat().filter(v => v === 2).length;
+        document.getElementById('ui').classList.add('hidden');
         slenderman.active = true;
-        startGameLocal();
         syncToAll();
     }
 
     function addChatMessage(sender, text) {
         const div = document.createElement('div');
-        div.innerHTML = `<b>${sender === 'Sistema' ? sender : getPlayerName(sender)}:</b> ${text}`;
+        const name = sender === 'Sistema' ? sender : (sender === myId ? "Tú" : getPlayerName(sender));
+        div.innerHTML = `<span style="color:#3498db">${name}:</span> ${text}`;
         chatMessages.appendChild(div);
         chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
-    // --- RENDER ---
+    // --- JUEGO ---
     let posX = 1.5, posY = 1.5, dirX = 1, dirY = 0, planeX = 0, planeY = 0.66;
-    let moveSpeed = 0.08, rotSpeed = 0.05;
+    let moveSpeed = 0.07, rotSpeed = 0.04;
     let keys = {};
     window.onkeydown = e => { if(!chatInput.matches(':focus')) keys[e.code] = true; };
     window.onkeyup = e => keys[e.code] = false;
 
-    function update() {
-        if(!gameStarted || isDead) return;
-        
-        // Movimiento
-        if (keys['ArrowRight'] || keys['KeyD']) {
-            let oldDirX = dirX;
-            dirX = dirX * Math.cos(rotSpeed) - dirY * Math.sin(rotSpeed);
-            dirY = oldDirX * Math.sin(rotSpeed) + dirY * Math.cos(rotSpeed);
-            let oldPlaneX = planeX;
-            planeX = planeX * Math.cos(rotSpeed) - planeY * Math.sin(rotSpeed);
-            planeY = oldPlaneX * Math.sin(rotSpeed) + planeY * Math.cos(rotSpeed);
-        }
-        if (keys['ArrowLeft'] || keys['KeyA']) {
-            let oldDirX = dirX;
-            dirX = dirX * Math.cos(-rotSpeed) - dirY * Math.sin(-rotSpeed);
-            dirY = oldDirX * Math.sin(-rotSpeed) + dirY * Math.cos(-rotSpeed);
-            let oldPlaneX = planeX;
-            planeX = planeX * Math.cos(-rotSpeed) - planeY * Math.sin(-rotSpeed);
-            planeY = oldPlaneX * Math.sin(-rotSpeed) + planeY * Math.cos(-rotSpeed);
-        }
-
-        let moveX = (keys['ArrowUp'] || keys['KeyW'] ? 1 : (keys['ArrowDown'] || keys['KeyS'] ? -1 : 0));
-        if(moveX !== 0) {
-            let nX = posX + dirX * moveSpeed * moveX;
-            let nY = posY + dirY * moveSpeed * moveX;
-            if(worldMap[Math.floor(nX)][Math.floor(posY)] === 0 || worldMap[Math.floor(nX)][Math.floor(posY)] === 2) posX = nX;
-            if(worldMap[Math.floor(posX)][Math.floor(nY)] === 0 || worldMap[Math.floor(posX)][Math.floor(nY)] === 2) posY = nY;
-        }
-
-        players[myId].x = posX; players[myId].y = posY;
-
-        // Notas
-        let mx = Math.floor(posX), my = Math.floor(posY);
-        if(worldMap[mx][my] === 2) {
-            if (hostConn) hostConn.send({ type: 'collect', id: myId, cx: mx, cy: my });
-            else handleData({ type: 'collect', id: myId, cx: mx, cy: my });
-        }
-
-        // Interpolación de otros jugadores
-        for(let id in players) {
-            if(id !== myId) {
-                players[id].x += (players[id].targetX - players[id].x) * 0.2;
-                players[id].y += (players[id].targetY - players[id].y) * 0.2;
-            }
-        }
-    }
-
     function render() {
-        update();
-        canvas.width = window.innerWidth / 1.5; // Resolución reducida para velocidad
+        canvas.width = window.innerWidth / 1.5; // Resolución reducida para evitar lag
         canvas.height = window.innerHeight / 1.5;
         const w = canvas.width, h = canvas.height;
-        
+
+        // FILTRO GRIS
         ctx.filter = `grayscale(${slenderEffect}%)`;
-        ctx.fillStyle = "#111"; ctx.fillRect(0,0,w,h/2); // Techo
-        ctx.fillStyle = "#222"; ctx.fillRect(0,h/2,w,h/2); // Suelo
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
+
+        if(!gameStarted) { requestAnimationFrame(render); return; }
 
         let zBuffer = new Array(w);
         for(let x = 0; x < w; x++) {
@@ -241,27 +193,24 @@
             let mX = Math.floor(posX), mY = Math.floor(posY);
             let dX = Math.abs(1/rDX), dY = Math.abs(1/rDY);
             let sX, sY, sDX, sDY, hit = 0, side;
-
-            if(rDX < 0) { sX = -1; sDX = (posX - mX) * dX; } else { sX = 1; sDX = (mX + 1 - posX) * dX; }
-            if(rDY < 0) { sY = -1; sDY = (posY - mY) * dY; } else { sY = 1; sDY = (mY + 1 - posY) * dY; }
-
+            if(rDX < 0){ sX = -1; sDX = (posX - mX) * dX; } else { sX = 1; sDX = (mX + 1 - posX) * dX; }
+            if(rDY < 0){ sY = -1; sDY = (posY - mY) * dY; } else { sY = 1; sDY = (mY + 1 - posY) * dY; }
             while(hit === 0) {
-                if(sDX < sDY) { sDX += dX; mX += sX; side = 0; }
-                else { sDY += dY; mY += sY; side = 1; }
+                if(sDX < sDY) { sDX += dX; mX += sX; side = 0; } else { sDY += dY; mY += sY; side = 1; }
                 if(worldMap[mX][mY] > 0) hit = worldMap[mX][mY];
             }
             let dist = (side === 0) ? (sDX - dX) : (sDY - dY);
             zBuffer[x] = dist;
             let lh = Math.floor(h / dist);
-            let c = hit === 2 ? `red` : `rgb(${150/dist},${150/dist},${150/dist})`;
-            ctx.fillStyle = c;
-            ctx.fillRect(x, h/2 - lh/2, 1, lh);
+            let color = hit === 2 ? 255 : Math.max(0, 150 - (dist * 15));
+            ctx.strokeStyle = hit === 2 ? "red" : `rgb(${side?color*0.5:color},${side?color*0.5:color},${side?color*0.5:color})`;
+            ctx.beginPath(); ctx.moveTo(x, h/2-lh/2); ctx.lineTo(x, h/2+lh/2); ctx.stroke();
         }
 
         let sprites = [];
-        if(slenderman.active) sprites.push({...slenderman, isS: true, sX:0.5, sY:2.0});
-        for(let id in players) if(id !== myId && !players[id].isDead) sprites.push({...players[id], id:id, isS:false, sX:0.6, sY:1.2});
-        
+        if(slenderman.active) sprites.push({...slenderman, isS: true, sX:0.5, sY:1.9});
+        for(let id in players) if(id !== myId && !players[id].isDead) sprites.push({...players[id], isS: false, sX:0.6, sY:1.0});
+
         sprites.sort((a,b) => Math.hypot(posX-b.x, posY-b.y) - Math.hypot(posX-a.x, posY-a.y));
         
         let tEff = 0;
@@ -273,29 +222,75 @@
                 let sx = Math.floor((w/2) * (1 + tx / ty));
                 let sh = Math.abs(Math.floor(h / ty)) * s.sY, sw = Math.abs(Math.floor(h / ty)) * s.sX;
                 if(sx > 0 && sx < w && ty < zBuffer[sx]) {
-                    if(s.isS) {
-                        ctx.fillStyle = "black"; ctx.fillRect(sx-sw/2, h/2-sh/2, sw, sh);
-                        ctx.fillStyle = "white"; ctx.fillRect(sx-sw/3, h/2-sh/2, sw/1.5, sh/4);
+                    if (s.isS) {
+                        // Slender: Cuerpo Negro, Cabeza Blanca
+                        ctx.fillStyle = "black"; ctx.fillRect(sx - sw/2, h/2 - sh/2 + (sh*0.2), sw, sh*0.8);
+                        ctx.fillStyle = "white"; ctx.fillRect(sx - sw/3, h/2 - sh/2, sw/1.5, sh*0.25);
                         let d = Math.hypot(rX, rY);
-                        if(d < 4) tEff = (1 - d/4) * 100;
+                        if(d < 5) tEff = Math.max(tEff, (1 - d/5) * 100);
                     } else {
                         ctx.drawImage(playerSprite, sx-sw/2, h/2-sh/2, sw, sh);
-                        ctx.fillStyle = "white"; ctx.fillText(getPlayerName(s.id), sx-10, h/2-sh/2-5);
+                        ctx.fillStyle = "white"; ctx.fillText(getPlayerName(s.id), sx, h/2-sh/2-5);
                     }
                 }
             }
         });
-        slenderEffect = slenderEffect * 0.8 + tEff * 0.2;
+
+        slenderEffect = slenderEffect * 0.9 + tEff * 0.1;
         document.getElementById('note-count').innerText = notesCollected;
         document.getElementById('total-notes').innerText = maxNotes;
+
+        // Movimiento local
+        if(!isDead) {
+            if(keys['KeyD'] || keys['ArrowRight']) {
+                let oldDX = dirX; dirX = dirX * Math.cos(rotSpeed) - dirY * Math.sin(rotSpeed); dirY = oldDX * Math.sin(rotSpeed) + dirY * Math.cos(rotSpeed);
+                let oldPX = planeX; planeX = planeX * Math.cos(rotSpeed) - planeY * Math.sin(rotSpeed); planeY = oldPX * Math.sin(rotSpeed) + planeY * Math.cos(rotSpeed);
+            }
+            if(keys['KeyA'] || keys['ArrowLeft']) {
+                let oldDX = dirX; dirX = dirX * Math.cos(-rotSpeed) - dirY * Math.sin(-rotSpeed); dirY = oldDX * Math.sin(-rotSpeed) + dirY * Math.cos(-rotSpeed);
+                let oldPX = planeX; planeX = planeX * Math.cos(-rotSpeed) - planeY * Math.sin(-rotSpeed); planeY = oldPX * Math.sin(-rotSpeed) + planeY * Math.cos(-rotSpeed);
+            }
+            let mDir = keys['KeyW'] || keys['ArrowUp'] ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? -1 : 0);
+            if(mDir !== 0) {
+                let nX = posX + dirX * moveSpeed * mDir, nY = posY + dirY * moveSpeed * mDir;
+                if(worldMap[Math.floor(nX)][Math.floor(posY)] !== 1) posX = nX;
+                if(worldMap[Math.floor(posX)][Math.floor(nY)] !== 1) posY = nY;
+            }
+            players[myId].x = posX; players[myId].y = posY;
+            let mx = Math.floor(posX), my = Math.floor(posY);
+            if(worldMap[mx][my] === 2) {
+                let msg = { type: 'collect', id: myId, cx: mx, cy: my };
+                if (hostConn) hostConn.send(msg); else handleData(msg);
+            }
+        }
+
+        // IA Slender (solo Host)
+        if(!hostConn && slenderman.active) {
+            let cl = null, mD = 999;
+            for(let id in players) if(!players[id].isDead) {
+                let d = Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y);
+                if(d < mD) { mD = d; cl = players[id]; }
+            }
+            if(cl) {
+                let ang = Math.atan2(cl.y - slenderman.y, cl.x - slenderman.x);
+                slenderman.x += Math.cos(ang) * 0.026; slenderman.y += Math.sin(ang) * 0.026;
+            }
+            for(let id in players) if(!players[id].isDead && Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y) < 0.4) {
+                players[id].isDead = true; if(id === myId) isDead = true; syncToAll();
+            }
+        }
+
         requestAnimationFrame(render);
+    }
+    
+    function updateLobbyUI() {
+        document.getElementById('start-btn').style.display = (Object.keys(players).length >= 2 && !hostConn) ? 'block' : 'none';
     }
 
     chatInput.addEventListener('keydown', e => {
         if (e.key === 'Enter' && chatInput.value.trim() !== "") {
-            broadcast({ type: 'chat', sender: myId, text: chatInput.value });
-            addChatMessage(myId, chatInput.value);
-            chatInput.value = "";
+            const msg = { type: 'chat', sender: myId, text: chatInput.value };
+            addChatMessage(myId, chatInput.value); broadcast(msg); chatInput.value = "";
         }
     });
 
